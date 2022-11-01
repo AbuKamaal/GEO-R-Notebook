@@ -1,5 +1,10 @@
 ---
 title: "GEO-notebook"
+knit: (function(input_file, encoding) {
+        out_dir <- 'docs';
+        rmarkdown::render(input_file,
+                encoding=encoding,
+                output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
 author: "AbuKamaal"
 date: '2022-09-01'
 output: html_document
@@ -7,20 +12,6 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-```
-
-```{r}
-install.packages("BiocManager")
-BiocManager::install(c("GEOquery"))
-BiocManager::install(c("limma"))
-install.packages("matrixStats")
-install.packages(c("dendextend"))
-install.packages(c("gplots"))
-install.packages(c("ggrepel"))
-install.packages("ggupset")
-BiocManager::install("clusterProfiler")
-BiocManager::install("org.Hs.eg.db", force = TRUE)
-BiocManager::install("pathview")
 library(GEOquery)
 library(limma)
 library(dendextend)
@@ -67,7 +58,7 @@ ave_X <- avereps(X, ID = rownames(X))
 
 Hierarchical clustering analysis (HCA) was performed using the stats package found in the core R library. A distance matrix was produced for the samples using the dist() function using the "euclidian" method. Following this, clustering was performed via hclust() function using the "complete" method.
 
-```{r}
+```{r, echo=FALSE, fig.dim=c(12,10), fig.align='center', out.width="100%"}
 ave_X <- t(ave_X)
 dist_X <- dist(ave_X,
                method = "euclidian")
@@ -84,7 +75,7 @@ plot(dend_ave_X)
 
 Euclidian method was used as the data were presented as continuous numerical values, and data points are scaled appropriately. Complete-linkage was used as it clusters based on furthest distance between data points in separate clusters and tends to be more suited in terms of time complexity and the dimensionality of the dataset (Schütze et al, 2008). A dendrogram was produced showing clustering of the samples using the dendextend package. This process was repeated similarly for the 100 genes with the highest standard deviation, as these genes could be inferred to have the most difference in expression profiles between samples. The same parameters were used for calculating the distance matrix and clustering, and a dendrogram was produced.
 
-```{r}
+```{r, echo=FALSE, fig.dim=c(12,10), fig.align='center', out.width="100%"}
 sd_X <- rowSds(as.matrix(t(ave_X)))
 geneNames <- as.character(rownames(t(ave_X)))
 sd_X_df <- data.frame(geneNames,sd_X)
@@ -105,7 +96,7 @@ plot(dend_gene)
 
 The heatmap produced, shown in Figure 1, showed clustering of Dengue haemorrhagic fever with Dengue fever and control with convalescent.
 
-```{r}
+```{r, echo=FALSE, fig.dim=c(12,10), fig.align='center', out.width="100%"}
 cols <- disease_state
 cols$disease.state <- as.character(cols$disease.state)
 cols[cols == "Convalescent"] <- "red"
@@ -145,19 +136,55 @@ PCA_plot
 
 In order to analyse differential gene expression, limma package was used along with gplots (Warnes er al, 2016) and ggrepel (Slowikowsi, 2021) to produce a volcano plot, showing differentially expressed genes that have significant adjusted p-value (p < 0.05). One problem that needed to be worked around was combining the metadata fetched using the fData() function from BioConductor with the expressison data as the dimensions were not the same. This was due to the way avereps() averaged repeat gene data based on ID. In order for metadata to be lined up correctly with the expression data, the metadata was split based on missing entries in the gene symbols column and then later merged. Expression data from avereps() that had corresponding fData entries were placed in one data frame with the fData entries merged, and expression data that did not have fData entries were placed in a separate data frame with the required annotation columns filled with n/a values. The two data frames were then merged, maintaining the full avereps() expression data, but also including the annotation data for entries that had them. A full script of how this was done is included in appendix 1. Once the data was processed, cutoffs for p-value and log Fold change (logFC) were set to 0.05 and 1 respectively. A volcano plot was produced using the following script. The top 30 genes were labelled also.
 
-```{r}
+```{r, echo=FALSE, fig.dim=c(12,10), fig.align='center', out.width="100%"}
+new_sample <- dplyr::select(pDat, disease.state, individual)
+design <- model.matrix(~0+new_sample$disease.state)
+colnames(design) <- c("Convalescent","Dengue_Fever","Dengue_Hemorrhagic_Fever","Healthy_Control")
+fit <- lmFit(ave_X, design)
+head(fit$coefficients)
+contrasts <- makeContrasts(Dengue_Hemorrhagic_Fever - Healthy_Control, levels=design)
+fit2 <- contrasts.fit(fit, contrasts)
+fit2 <- eBayes(fit2)
+topTable(fit2)
+table(decideTests(fit2))
+annotation_data <- fData(eset)
+annotation_data <- subset(annotation_data,select = c(3,4,14))
+geneNames2 <- rownames(topTable(fit2, number=Inf))
+anno <- annotation_data[annotation_data$`Gene symbol` %in% geneNames2,]
+anno <- tibble::rownames_to_column(anno,"ID")
+anno <- anno %>% distinct(`Gene symbol`, .keep_all = TRUE)
+newanno <- anno[,-1]
+rownames(newanno) <- anno[,2]
+anno <- newanno
+remove(newanno)
+anno_2 <- annotation_data[rownames(annotation_data) %in% geneNames2,]
+anno <- rbind(anno,anno_2)
+anno <- tibble::rownames_to_column(anno,"ID")
+full_results <- topTable(fit2, number=Inf)
+full_results <- tibble::rownames_to_column(full_results,"ID")
+full_results <- merge(full_results,anno,by="ID")
+full_results_test <- topTable(fit2,number=Inf)
+full_results_test <- tibble::rownames_to_column(full_results_test,"ID")
+'%!in%' <- Negate('%in%')
+full_results_test <- full_results_test[full_results_test$ID %!in% full_results$ID,]
+full_results_test$`Gene symbol` <- NA
+full_results_test$`Gene ID` <- NA
+full_results_test$`Chromosome location` <- NA
+full_results <- rbind(full_results,full_results_test)
+full_results <- full_results %>% arrange(P.Value)
 p_cutoff <- 0.05
 fc_cutoff <- 1
 topN <- 30
 options(ggrepel.max.overlaps = Inf)
 full_results %>%
         mutate(Significant = P.Value < p_cutoff, abs(logFC) > fc_cutoff ) %>%
-        mutate(Rank = 1:n(),
+        mutate(Rank = 1:n(), 
                Label = ifelse(Rank < topN,`Gene symbol` , "")) %>%
-        ggplot(aes(x = logFC,
-                   y = -log10(P.Value),
+        ggplot(aes(x = logFC, 
+                   y = -log10(P.Value), 
                    col=Significant,
                    label=Label)) + geom_point() + geom_text_repel(col="black")
+
 ```
 
 The data used was a comparison between Dengue haemorrhagic fever and healthy controls. Those genes that showed significant adjusted p-values were separated and then passed onto the next of gene set enrichment analysis, where these genes would be grouped using databases of networks and reactomes and determine which pathways are most likely affected.
@@ -168,7 +195,7 @@ Following this, gene set enrichment analysis was done using the clusterProfiler 
 
 These results were then visualised to produce a dotplot for 10 biological pathways. Dotplot shows the gene sets divided into two groups, activated or supressed, with the size of the dots corresponding to the count.
 
-```{r}
+```{r, echo=FALSE, fig.dim=c(12,10), fig.align='center', out.width="100%"}
 geneList <- full_results$logFC
 names(geneList) <- full_results$`Gene ID`
 geneList <- sort(geneList, decreasing = TRUE)
@@ -187,7 +214,7 @@ enrichplot::dotplot(gsea_go, showCategory=10, split=".sign") + facet_grid(.~.sig
 
 This process was repeated but instead using KEGG pathway database.
 
-```{r}
+```{r, echo=FALSE, fig.dim=c(12,10), fig.align='center', out.width="100%"}
 gsea_kegg <- gseKEGG(
         geneList = geneList,
         organism = "hsa",
