@@ -1,0 +1,209 @@
+---
+title: "GEO-notebook"
+author: "AbuKamaal"
+date: '2022-11-01'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+install.packages("BiocManager")
+BiocManager::install(c("GEOquery"))
+BiocManager::install(c("limma"))
+install.packages("matrixStats")
+install.packages(c("dendextend"))
+install.packages(c("gplots"))
+install.packages(c("ggrepel"))
+install.packages("ggupset")
+BiocManager::install("clusterProfiler")
+BiocManager::install("org.Hs.eg.db", force = TRUE)
+BiocManager::install("pathview")
+library(GEOquery)
+library(limma)
+library(dendextend)
+library(matrixStats)
+library(dplyr)
+library(ggplot2)
+library(enrichplot)
+library(ggupset)
+library(gplots)
+library(ggrepel)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(pathview)
+```
+
+## Introduction
+
+With the increasing access to large microarray datasets for a wide range of disease states, the possibility for advanced computational analysis using methods such as principal component analysis opens the door for new insight into underlying mechanisms of diseases.
+
+The data used was obtained through DNA microarrays and data-sets were retrieved from NCBI's Genome Expression Omnibus public repository (Barrett et al, 2013). The dataset in question came from a study that investigated blood samples of individuals infected with dengue virus and during convalescence (Kwissa et al, 2014). By exploring the dataset and identifying significant differences in genes expression between healthy and diseased individuals, key insights can be made into the response mechanisms of hosts infected with dengue virus.
+
+## Loading in and initatial wrangling of data 
+
+In order to retrieve the data-set from the database, BioConductor's GEOquery package was used (Davis & Meltzer, 2007).
+GDS2eset() can extract the expression data from the gse dataset, while pData() retrieves information about samples. 
+
+```{r}
+gse <- getGEO("GDS5093", GSEMatrix = TRUE)
+X <- Table(gse)
+eset <- GDS2eSet(gse, do.log2=TRUE)
+pDat <- pData(eset)
+```
+
+Avereps() averages duplicates based on row names.
+
+```{r}
+geneNames <- as.character(X$IDENTIFIER)
+X <- exprs(eset)
+rownames(X) <- geneNames
+ave_X <- avereps(X, ID = rownames(X))
+```
+
+## Hierarchical clustering analysis (HCA)
+
+Hierarchical clustering analysis (HCA) was performed using the stats package found in the core R library. A distance matrix was produced for the samples using the dist() function using the "euclidian" method. Following this, clustering was performed via hclust() function using the "complete" method.
+
+```{r}
+ave_X <- t(ave_X)
+dist_X <- dist(ave_X,
+               method = "euclidian")
+hclust_comp <- hclust(dist_X,
+                      method = "complete")
+dend_ave_X <- as.dendrogram(hclust_comp)
+disease_state <- subset(pDat,
+                        select=c("disease.state"))
+dend_ave_X <- dend_ave_X %>% set("labels_colors", 
+                                 as.numeric(disease_state$disease.state), 
+                                 order_value = TRUE)
+plot(dend_ave_X)
+```
+
+Euclidian method was used as the data were presented as continuous numerical values, and data points are scaled appropriately. Complete-linkage was used as it clusters based on furthest distance between data points in separate clusters and tends to be more suited in terms of time complexity and the dimensionality of the dataset (Schütze et al, 2008). A dendrogram was produced showing clustering of the samples using the dendextend package. This process was repeated similarly for the 100 genes with the highest standard deviation, as these genes could be inferred to have the most difference in expression profiles between samples. The same parameters were used for calculating the distance matrix and clustering, and a dendrogram was produced.
+
+```{r}
+sd_X <- rowSds(as.matrix(t(ave_X)))
+geneNames <- as.character(rownames(t(ave_X)))
+sd_X_df <- data.frame(geneNames,sd_X)
+sd_X_df <- sd_X_df[order(sd_X_df$sd_X,
+                         decreasing = TRUE), ]
+sd_X_100 <- head(sd_X_df$geneNames, 100)
+X_100 <- subset(t(ave_X),
+                rownames(t(ave_X)) %in% sd_X_100)
+dist_100 <- dist(X_100,
+                 method = "euclidian")
+hclust_100 <- hclust(dist_100,
+                     method = "complete")
+dend_gene <- as.dendrogram(hclust_100)
+plot(dend_gene)
+```
+
+## Creating a Heatmap
+
+The heatmap produced, shown in Figure 1, showed clustering of Dengue haemorrhagic fever with Dengue fever and control with convalescent.
+
+```{r}
+cols <- disease_state
+cols$disease.state <- as.character(cols$disease.state)
+cols[cols == "Convalescent"] <- "red"
+cols[cols == "Dengue Hemorrhagic Fever"] <- "green"
+cols[cols == "Dengue Fever"] <- "black"
+cols[cols == "healthy control"] <- "blue"
+cols <- cols$disease.state
+heatmap.2(X_100, colCol = cols)
+```
+
+## Principle Component Analysis (PCA)
+
+Principal component analysis was conducted using the core stats package. This was done to reduce dimensionality and allow follow up analysis for differential gene expression. This also showed clusetering via the scatter plot produced for PCA, although it was clearer based on this graph compared to the heatmap that there are some data points that were not clustering as well as others.
+
+```{r}
+ave_X <- t(ave_X)
+Xpca <- prcomp(t(ave_X), scale = TRUE)
+summary(Xpca)
+barplot(Xpca$sdev^2 / sum(Xpca$sdev^2),
+        ylim = c(0,0.20),
+        names.arg = c(1:56),
+        xlab = "Principal Components",
+        ylab = "Cumulative Proportion")
+PCA_scores <- as.data.frame(Xpca$x)
+PCA_scores <- cbind(PCA_scores, disease_state)
+PCA_scores$disease.state <- as.factor(PCA_scores$disease.state)
+PCA_plot <- ggplot(data = PCA_scores, aes(x = PC1, y = PC2, color=disease.state)) +
+        geom_point(size=2) +
+        scale_fill_hue(l=40) +
+        coord_fixed(ratio = 1, xlim = range(PCA_scores$PC1), ylim = range(PCA_scores$PC2))
+PCA_plot
+```
+
+
+
+## Differential Expression Analysis via Volcano Plot
+
+In order to analyse differential gene expression, limma package was used along with gplots (Warnes er al, 2016) and ggrepel (Slowikowsi, 2021) to produce a volcano plot, showing differentially expressed genes that have significant adjusted p-value (p < 0.05). One problem that needed to be worked around was combining the metadata fetched using the fData() function from BioConductor with the expressison data as the dimensions were not the same. This was due to the way avereps() averaged repeat gene data based on ID. In order for metadata to be lined up correctly with the expression data, the metadata was split based on missing entries in the gene symbols column and then later merged. Expression data from avereps() that had corresponding fData entries were placed in one data frame with the fData entries merged, and expression data that did not have fData entries were placed in a separate data frame with the required annotation columns filled with n/a values. The two data frames were then merged, maintaining the full avereps() expression data, but also including the annotation data for entries that had them. A full script of how this was done is included in appendix 1. Once the data was processed, cutoffs for p-value and log Fold change (logFC) were set to 0.05 and 1 respectively. A volcano plot was produced using the following script. The top 30 genes were labelled also.
+
+```{r}
+p_cutoff <- 0.05
+fc_cutoff <- 1
+topN <- 30
+options(ggrepel.max.overlaps = Inf)
+full_results %>%
+        mutate(Significant = P.Value < p_cutoff, abs(logFC) > fc_cutoff ) %>%
+        mutate(Rank = 1:n(),
+               Label = ifelse(Rank < topN,`Gene symbol` , "")) %>%
+        ggplot(aes(x = logFC,
+                   y = -log10(P.Value),
+                   col=Significant,
+                   label=Label)) + geom_point() + geom_text_repel(col="black")
+```
+
+The data used was a comparison between Dengue haemorrhagic fever and healthy controls. Those genes that showed significant adjusted p-values were separated and then passed onto the next of gene set enrichment analysis, where these genes would be grouped using databases of networks and reactomes and determine which pathways are most likely affected.
+
+## Gene Set Enrichment Analysis
+
+Following this, gene set enrichment analysis was done using the clusterProfiler (Yu et al, 2012), org.Hs.eg.db (Carlson, 2020), pathview (Luo & Brouwer, 2013), and enrichplot (Yu, 2021) packages. Over-representation analysis was used to see if any biological pathways are implicated in Dengue haemorrhagic fever by significantly enriched or depleted gene sets.
+
+These results were then visualised to produce a dotplot for 10 biological pathways. Dotplot shows the gene sets divided into two groups, activated or supressed, with the size of the dots corresponding to the count.
+
+```{r}
+geneList <- full_results$logFC
+names(geneList) <- full_results$`Gene ID`
+geneList <- sort(geneList, decreasing = TRUE)
+gsea_go <- gseGO(
+        geneList = geneList,
+        OrgDb = org.Hs.eg.db,
+        ont = "BP",
+        minGSSize = 10,
+        maxGSSize = 500,
+        pvalueCutoff = 0.05,
+        pAdjustMethod = "BH",
+        by = "fgsea")
+gsea_go <- setReadable(gsea_go, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+enrichplot::dotplot(gsea_go, showCategory=10, split=".sign") + facet_grid(.~.sign)
+```
+
+This process was repeated but instead using KEGG pathway database.
+
+```{r}
+gsea_kegg <- gseKEGG(
+        geneList = geneList,
+        organism = "hsa",
+        keyType = "kegg",
+        minGSSize = 10,
+        maxGSSize = 500,
+        pvalueCutoff = 0.05,
+        pAdjustMethod = "BH",
+        by = "fgsea")
+enrichplot::dotplot(gsea_kegg, showCategory=10, split=".sign") + facet_grid(.~.sign)
+```
+
+In order to identify potential gene sets (and thereby find potential biological networks implicated in Dengue fever), gene enrichment analysis was run using both GO and KEGG database. Dot plots were produced for both, as shown for the two previous plots. GO dotplot shows gene sets that are all within significant p-values. Negative regulation of T-helper cell differentiation and neutrophil degranulation seem to have lower adjusted p-values compared to the other gene sets. Negative regulation of T-helper cell differentiation and cardiac epithelial to mesenchymal transition both have relatively small counts, indicating a lower number of genes in the differential expressed gene list for those gene sets. Supressed networks appear to have a lower gene ratio, meaning that these networks contain a lower proportion of the genes found in the differential expression gene list. KEGG dotplot uses a different database and the resulting gene sets are also different. In this case there seems to be more gene sets with higher gene ratios for the activated gene sets, with somewhat uniform gene counts and all significant adjusted p values. The suppressed gene sets show some that are not significant in terms of adjusted p-values and generally have lower gene ratios.
+
+As the disease is caused by a viral vector, it would be expected that gene sets involved in DNA replication would be affected, as this is the method by which viruses replicated.
+
+## Conclusion
+
+Through differential gene expression and gene set enrichment analysis, some biological networks were found to be potentially implicated in dengue fever. This could provide an opportunity for further study into these networks and the underlying biological mechanism for pathology.
